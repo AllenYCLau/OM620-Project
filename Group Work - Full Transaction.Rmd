@@ -1,0 +1,154 @@
+---
+title: "Untitled"
+author: "Allen Lau"
+date: "2023-11-29"
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(dplyr)
+library(readr)
+library(readxl)
+library(lubridate)
+library(ggplot2)
+library(scales)
+library(sqldf)
+library(ISLR)
+library(MASS)
+library(randomForest)
+library(class)
+library(tidyverse)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+setwd("C:/Users/allen/OneDrive - ualberta.ca/MBA/4. 2023 Fall/OM 620 Predictive Business Analytics/Assignment")
+```
+## Loading and Cleaning
+```{r}
+full_transac <- read_csv("Transac ALL.csv")
+full_transac$CU_GENDER <- as.factor(full_transac$CU_GENDER)
+full_transac <- mutate(full_transac, CU_GENDER = ifelse(transactionsT_CUSTOMER_ID == 999999999999999, "NA", ifelse(transactionsT_CUSTOMER_ID == 1.000000e+15, "NA", CU_GENDER)))
+full_transac <- full_transac[-c(1:3, 9, 19:22)]
+full_transac <- filter(full_transac, DEPARTMENT_DESCRIPTION != "Water" & DEPARTMENT_DESCRIPTION != "Lottery" & DEPARTMENT_DESCRIPTION != "ACCOUNT FUNCTIONS" & TILL_RECEIPT_NUMBER != "234451" & TILL_RECEIPT_NUMBER != "221239" & TILL_RECEIPT_NUMBER != "156359")
+names(full_transac)
+full_transac <- mutate(full_transac, Profit = SALES_VALUE - COST_AMOUNT)
+full_transac <- mutate(full_transac, Unique_trip = paste(TILL_RECEIPT_NUMBER, TRANSACTION_DATE, sep = '_'))
+full_transac <- mutate(full_transac, Dayinweek = wday(mdy(TRANSACTION_DATE), label = TRUE))
+factorcol <- c(1:6, 10:22, 24:25)
+full_transac[,factorcol] <- lapply(full_transac[,factorcol], factor)
+rm(factorcol)
+summary(full_transac)
+names(full_transac)
+```
+
+## On Transaction
+```{r}
+ggplot(full_transac, aes(Special_Description, Profit)) + geom_boxplot()
+ggplot(full_transac, aes(Special_Description, Profit)) + geom_boxplot() + coord_cartesian(ylim = c(0, 50))
+special_transac_profit <- sqldf("Select Special_Description, count(QUANTITY_SOLD), sum(Profit), (sum(Profit) / count(QUANTITY_SOLD)) from full_transac group by Special_Description")
+commodity_by_profit <- sqldf("Select Department_Description, sum(Profit) as commodity_profit, (sum(Profit) / sum(QUANTITY_SOLD)) as unit_profit from full_transac group by Department_Description")
+ggplot(full_transac,) + geom_col(aes(Special_Description, sum(Profit)))
+ggplot(commodity_by_profit) + geom_col(aes(DEPARTMENT_DESCRIPTION, commodity_profit))
+ggplot(commodity_by_profit) + geom_col(aes(DEPARTMENT_DESCRIPTION, unit_profit))
+```
+
+## On receipt (trip)
+```{r}
+full_receipt_department <- sqldf("select Unique_trip, Special_Description, Department_Description, sum(Profit) as Trip_profit from full_transac group by Unique_trip")
+
+meat_receipt <- sqldf("select Unique_trip, Special_Description, Department_Description, sum(Profit) as Trip_profit from full_transac where Department_Description = 'Meat' group by Unique_trip")
+non_meat_receipt <- sqldf("select Unique_trip, Special_Description, Department_Description, sum(Profit) as Trip_profit from full_transac where Department_Description <> 'Meat'group by Unique_trip")
+trip_with_meat <- filter(full_receipt_department, Unique_trip %in% meat_receipt$Unique_trip)
+trip_without_meat <- subset(full_receipt_department, !(Unique_trip %in% meat_receipt$Unique_trip))
+
+trip_meat_plot <- ggplot(trip_with_meat) + geom_col(aes(DEPARTMENT_DESCRIPTION, Trip_profit, fill = DEPARTMENT_DESCRIPTION)) + theme(legend.position = 'none') + scale_y_continuous(labels = comma_format(big.mark = ",",decimal.mark = "."))
+trip_meat_plot
+
+trip_no_meat_plot <- ggplot(trip_without_meat) + geom_col(aes(DEPARTMENT_DESCRIPTION, Trip_profit, fill = DEPARTMENT_DESCRIPTION)) + theme(legend.position = 'none') + scale_y_continuous(labels = comma_format(big.mark = ",",decimal.mark = "."))
+trip_no_meat_plot
+
+trip_meat_special_plot <- ggplot(trip_with_meat) + geom_col(aes(DEPARTMENT_DESCRIPTION, Trip_profit, fill = DEPARTMENT_DESCRIPTION)) + facet_wrap(~Special_Description) + theme(legend.position = 'none') + scale_y_continuous(labels = comma_format(big.mark = ",",decimal.mark = "."))
+trip_meat_special_plot
+ggsave(trip_meat_special_plot + theme(axis.text.x=element_text(size = 6, angle=45, hjust=1)), file ="trip with meat specials used.png", path = "C:/Users/allen/OneDrive - ualberta.ca/MBA/4. 2023 Fall/OM 620 Predictive Business Analytics/Assignment", scale = 2)
+
+trip_no_meat_special_plot <- ggplot(trip_without_meat) + geom_col(aes(DEPARTMENT_DESCRIPTION, Trip_profit, fill = DEPARTMENT_DESCRIPTION)) + facet_wrap(~Special_Description) + theme(legend.position = 'none') + scale_y_continuous(labels = comma_format(big.mark = ",",decimal.mark = "."))
+trip_no_meat_special_plot
+ggsave(trip_no_meat_special_plot + theme(axis.text.x=element_text(size = 6, angle=45, hjust=1)), file ="trip without meat specials used.png", path = "C:/Users/allen/OneDrive - ualberta.ca/MBA/4. 2023 Fall/OM 620 Predictive Business Analytics/Assignment", scale=2)
+```
+
+## Who lives in Alabama? + Tough People Do
+```{r}
+full_receipt <- sqldf("select Unique_trip, DEPARTMENT_DESCRIPTION, sum(SALES_VALUE) as Trip_sales, sum(Profit) as Trip_profit, SPECIAL_TYPE, Special_Description, CU_AGE_RANGE, CU_GENDER, CUSTOMER_TYPE, Dayinweek, deptsT_DEPARTMENT_ID as Department_ID from full_transac group by Unique_trip")
+
+trip_only <-sqldf("select Unique_trip, sum(SALES_VALUE) as Trip_sales, sum(Profit) as Trip_profit, Dayinweek, CU_AGE_RANGE, CU_GENDER from full_transac group by Unique_trip")
+
+full_receipt_meat <- full_receipt %>% mutate(With_meat = ifelse(Unique_trip %in% meat_receipt$Unique_trip, TRUE, FALSE))
+full_receipt_meat$With_meat <- factor(full_receipt_meat$With_meat)
+full_receipt_minus_meat <- full_receipt_meat %>% filter(!DEPARTMENT_DESCRIPTION %in% 'Meat')
+factorcol <- c("Special_Description", "CU_AGE_RANGE", "CU_GENDER", "CUSTOMER_TYPE", "Department_ID")
+full_receipt_meat[,factorcol] <- lapply(full_receipt_meat[,factorcol], factor)
+rm(factorcol)
+
+meat_trip <- trip_only %>% mutate(With_meat = ifelse(Unique_trip %in% meat_receipt$Unique_trip, TRUE, FALSE))
+meat_trip$With_meat <- factor(meat_trip$With_meat)
+factorcol <- c("CU_AGE_RANGE")
+meat_trip[,factorcol] <- lapply(meat_trip[,factorcol], factor)
+rm(factorcol)
+
+set.seed(69420)
+train_test_id <- sample(1:nrow(full_receipt_minus_meat), size = (1 / 2) * nrow(full_receipt_minus_meat), replace = F)
+full_receipt_meat_train <- full_receipt_minus_meat[train_test_id,]
+full_receipt_meat_test <- full_receipt_minus_meat[-train_test_id,]
+with_meat_bagging <- randomForest(With_meat ~ DEPARTMENT_DESCRIPTION + Trip_sales + CU_GENDER, data = full_receipt_meat_train, mtry = 5, importance = T, na.action = na.omit)
+with_meat_bagging
+rf_predict <- predict(with_meat_bagging, full_receipt_meat_test)
+rf_pred_results <- table(full_receipt_meat_test$With_meat, rf_predict)
+rf_pred_results
+rf_error_rate  <- 1 - sum(diag(rf_pred_results)) / sum(rf_pred_results)
+rf_error_rate
+varImpPlot(with_meat_bagging)
+```
+
+## KNN
+```{r}
+set.seed(69420)
+names(full_receipt_minus_meat)
+summary(full_receipt_meat_train)
+full_receipt_minus_meat$Dayinweek <- as.numeric(full_receipt_minus_meat$Dayinweek)
+full_receipt_minus_meat$Dayinweek <- as.factor(full_receipt_minus_meat$Dayinweek)
+full_receipt_meat_train <- full_receipt_minus_meat[train_test_id,]
+full_receipt_meat_test <- full_receipt_minus_meat[-train_test_id,]
+
+col_for_knn <- c(3, 10, 11)
+knn_test_15 <- knn(full_receipt_meat_train[,col_for_knn], full_receipt_meat_test[,col_for_knn], full_receipt_meat_train[,12], k = 15)
+table(full_receipt_meat_test[,12], knn_test_15)
+1 - sum(diag(table(full_receipt_meat_test[,12], knn_test_15))) / sum(table(full_receipt_meat_test[,12], knn_test_15))
+knn_test_30 <- knn(full_receipt_meat_train[,col_for_knn], full_receipt_meat_test[,col_for_knn], full_receipt_meat_train[,12], k = 30)
+table(full_receipt_meat_test[,12], knn_test_30)
+1 - sum(diag(table(full_receipt_meat_test[,12], knn_test_30))) / sum(table(full_receipt_meat_test[,12], knn_test_30))
+knn_test_35 <- knn(full_receipt_meat_train[,col_for_knn], full_receipt_meat_test[,col_for_knn], full_receipt_meat_train[,12], k = 35)
+table(full_receipt_meat_test[,12], knn_test_35)
+1 - sum(diag(table(full_receipt_meat_test[,12], knn_test_35))) / sum(table(full_receipt_meat_test[,12], knn_test_35))
+```
+## Decision Tree
+```{r}
+meat_tree <- rpart(With_meat ~ DEPARTMENT_DESCRIPTION + Special_Description + Dayinweek + Trip_sales + Trip_profit + CU_AGE_RANGE + CU_GENDER, data = full_receipt_meat_train, method = "class", parms = list(split = "information"), cp = .002)
+rpart.plot(meat_tree, cex = .6)
+meat_tree
+printcp(meat_tree)
+
+another_tree <- rpart(With_meat ~ Dayinweek + Trip_sales + Trip_profit + CU_AGE_RANGE + CU_GENDER, data = meat_trip, method = "class", parms = list(split = "information"), cp = .002)
+rpart.plot(another_tree, cex = .6)
+another_tree
+printcp(another_tree)
+
+meat_tree_department <- rpart(With_meat ~ DEPARTMENT_DESCRIPTION + Dayinweek + Special_Description, data = full_receipt_meat_train, method = "class", parms = list(split = "information"), minsplit = 1, minbucket = 1, cp = .00005)
+rpart.plot(meat_tree_department, cex = .6)
+meat_tree_department
+printcp(meat_tree_department)
+
+```
+
+
+
