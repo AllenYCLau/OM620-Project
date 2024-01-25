@@ -1,0 +1,4 @@
+# To create LEFT JOIN file combining transaction and special databases
+
+SELECT *
+FROM (((transactionsT LEFT JOIN customersT ON transactionsT.CUSTOMER_ID = customersT.CUSTOMER_ID) LEFT JOIN subdeptsT ON transactionsT.SUB_DEPARTMENT = subdeptsT.SUBDEPARTMENT_ID) LEFT JOIN deptsT ON subdeptsT.DEPARTMENT_ID = deptsT.DEPARTMENT_ID) LEFT JOIN specialsT ON transactionsT.SPECIAL_TYPE = specialsT.Specials_ID;
